@@ -1,0 +1,17 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local files
+.env
+.env.*
+*.log
+
+# Tests and local camera utilities are not needed in the runtime image
+tests/
+camera_test.py
+pose_test.py
+ws_camera_test.py
