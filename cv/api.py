@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import secrets
+import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -294,6 +295,7 @@ async def pushup_websocket(websocket: WebSocket):
 
         while True:
             image_bytes = await websocket.receive_bytes()
+            frame_started_at = time.perf_counter()
 
             if not image_bytes or len(image_bytes) > MAX_FRAME_BYTES:
                 await websocket.send_json({
@@ -372,9 +374,14 @@ async def pushup_websocket(websocket: WebSocket):
             if room_attached:
                 update_player_reps(room_code, player_id, result.get("reps", 0))
 
+            processing_ms = round(
+                (time.perf_counter() - frame_started_at) * 1000,
+                1,
+            )
             await websocket.send_json({
                 "type": "result",
                 **result,
+                "processing_ms": processing_ms,
             })
 
     except WebSocketDisconnect:

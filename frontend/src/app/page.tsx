@@ -10,6 +10,7 @@ type CvResult = {
   arm_side?: string | null;
   reps?: number;
   phase?: string;
+  processing_ms?: number;
   result?: "winner" | "draw" | null;
   winner_player_id?: string | null;
   room?: MatchRoom;
@@ -96,6 +97,7 @@ export default function Home() {
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sendingRef = useRef(false);
+  const frameSentAtRef = useRef<number | null>(null);
 
   const [status, setStatus] = useState("ยังไม่ได้เชื่อมต่อ");
   const [isRunning, setIsRunning] = useState(false);
@@ -376,6 +378,7 @@ export default function Home() {
     }
 
     sendingRef.current = false;
+    frameSentAtRef.current = null;
     setIsRunning(false);
     setStatus(message);
   }, []);
@@ -443,10 +446,14 @@ export default function Home() {
       };
 
       socket.onmessage = (event: MessageEvent<string>) => {
+        if (socketRef.current !== socket) return;
+
         let data: CvResult;
         try {
           data = JSON.parse(event.data) as CvResult;
         } catch {
+          sendingRef.current = false;
+          frameSentAtRef.current = null;
           setError("ได้รับข้อมูลจาก AI ในรูปแบบที่ไม่ถูกต้อง");
           return;
         }
@@ -458,6 +465,8 @@ export default function Home() {
         }
 
         if (data.type === "error") {
+          sendingRef.current = false;
+          frameSentAtRef.current = null;
           setError(data.message ?? "เกิดข้อผิดพลาดจาก AI Server");
           return;
         }
@@ -473,6 +482,15 @@ export default function Home() {
         }
 
         if (data.type === "result") {
+          const sentAt = frameSentAtRef.current;
+          if (sentAt !== null) {
+            console.debug("[RepBattle] Frame timing", {
+              roundTripMs: Math.round(performance.now() - sentAt),
+              processingMs: data.processing_ms ?? null,
+            });
+          }
+          sendingRef.current = false;
+          frameSentAtRef.current = null;
           setPoseDetected(Boolean(data.pose_detected));
           setAngle(data.elbow_angle ?? null);
           setReps(data.reps ?? 0);
@@ -522,9 +540,14 @@ export default function Home() {
         return;
       }
 
-      const width = video.videoWidth;
-      const height = video.videoHeight;
-      if (!width || !height) return;
+      const sourceWidth = video.videoWidth;
+      const sourceHeight = video.videoHeight;
+      if (!sourceWidth || !sourceHeight) return;
+
+      // ส่งภาพไม่เกิน 640x480 เพื่อลดขนาดข้อมูลที่ส่งไปยัง AI Server
+      const scale = Math.min(640 / sourceWidth, 480 / sourceHeight, 1);
+      const width = Math.round(sourceWidth * scale);
+      const height = Math.round(sourceHeight * scale);
 
       canvas.width = width;
       canvas.height = height;
@@ -538,13 +561,32 @@ export default function Home() {
       context.drawImage(video, 0, 0, width, height);
       context.restore();
 
+      // ส่งได้ครั้งละ 1 เฟรม และรอผลจาก Backend ก่อนส่งเฟรมถัดไป
       sendingRef.current = true;
+      frameSentAtRef.current = performance.now();
       canvas.toBlob(
         (blob) => {
-          if (blob && socket.readyState === WebSocket.OPEN) {
-            socket.send(blob);
+          if (
+            !blob ||
+            socket.readyState !== WebSocket.OPEN ||
+            socketRef.current !== socket
+          ) {
+            if (socketRef.current === socket) {
+              sendingRef.current = false;
+              frameSentAtRef.current = null;
+            }
+            return;
           }
-          sendingRef.current = false;
+
+          try {
+            socket.send(blob);
+          } catch {
+            if (socketRef.current === socket) {
+              sendingRef.current = false;
+              frameSentAtRef.current = null;
+              setError("ส่งภาพไปยัง AI Server ไม่สำเร็จ");
+            }
+          }
         },
         "image/jpeg",
         0.7,
